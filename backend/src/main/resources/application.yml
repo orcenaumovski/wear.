@@ -1,0 +1,35 @@
+server:
+  address: 127.0.0.1
+  port: 8080
+
+app:
+  storage:
+    imagesDir: ./data/images
+  ollama:
+    baseUrl: ${OLLAMA_BASE_URL:http://localhost:11434}
+    model: ${OLLAMA_MODEL:gemma4:31b-cloud}
+    connectTimeout: ${OLLAMA_CONNECT_TIMEOUT:5s}
+    readTimeout: ${OLLAMA_READ_TIMEOUT:120s}
+
+spring:
+  datasource:
+    url: jdbc:sqlite:./data/vicevice.db
+    driver-class-name: org.sqlite.JDBC
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.community.dialect.SQLiteDialect
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+spring.servlet.multipart:
+  max-file-size: 15MB
+  max-request-size: 15MB
+
+logging.level:
+  org.hibernate.SQL: warn
+

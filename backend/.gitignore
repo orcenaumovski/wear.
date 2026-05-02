@@ -1,0 +1,6 @@
+build
+target
+data/
+gradle-8.13
+gradle.zip
+*.log
