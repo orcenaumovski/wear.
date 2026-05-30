@@ -1,20 +1,24 @@
 package com.vicevice.app.item;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vicevice.app.auth.AuthService;
+import com.vicevice.app.outfit.SavedOutfitItemRepository;
 import com.vicevice.app.storage.ImageStorageService;
 import jakarta.validation.constraints.NotNull;
+import jakarta.transaction.Transactional;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -30,22 +34,29 @@ public class ItemController {
     private final ImageStorageService imageStorageService;
     private final ItemAnalysisService itemAnalysisService;
     private final ObjectMapper objectMapper;
+    private final AuthService authService;
+    private final SavedOutfitItemRepository savedOutfitItemRepository;
 
     public ItemController(
             ItemRepository itemRepository,
             ImageStorageService imageStorageService,
             ItemAnalysisService itemAnalysisService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            AuthService authService,
+            SavedOutfitItemRepository savedOutfitItemRepository
     ) {
         this.itemRepository = itemRepository;
         this.imageStorageService = imageStorageService;
         this.itemAnalysisService = itemAnalysisService;
         this.objectMapper = objectMapper;
+        this.authService = authService;
+        this.savedOutfitItemRepository = savedOutfitItemRepository;
     }
 
     @GetMapping
-    public List<ItemDto> list() {
-        return itemRepository.findAll().stream().map(it -> ItemDto.from(
+    public List<ItemDto> list(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        AuthService.AuthenticatedUser user = authService.requireUser(authorization);
+        return itemRepository.findByUserIdOrderByCreatedAtEpochMsDesc(user.id()).stream().map(it -> ItemDto.from(
                 it,
                 imageStorageService.filenameForClient(it.getImagePath()),
                 null
@@ -53,14 +64,23 @@ public class ItemController {
     }
 
     @GetMapping("/{id}")
-    public ItemDto get(@PathVariable Integer id) {
-        Item item = findItem(id);
+    public ItemDto get(
+            @PathVariable Integer id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        AuthService.AuthenticatedUser user = authService.requireUser(authorization);
+        Item item = findItem(id, user);
         return ItemDto.from(item, imageStorageService.filenameForClient(item.getImagePath()), null);
     }
 
     @GetMapping("/{id}/image")
-    public ResponseEntity<Resource> image(@PathVariable Integer id) throws Exception {
-        Item item = findItem(id);
+    public ResponseEntity<Resource> image(
+            @PathVariable Integer id,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(required = false) String token
+    ) throws Exception {
+        AuthService.AuthenticatedUser user = authService.requireUser(authorization, token);
+        Item item = findItem(id, user);
         Path path = imageStorageService.resolve(item.getImagePath());
         Resource resource = new UrlResource(path.toUri());
         if (!resource.exists() || !resource.isReadable()) {
@@ -78,9 +98,11 @@ public class ItemController {
      */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public List<ItemDto> create(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(required = false) String name,
             @RequestParam("images") @NotNull List<MultipartFile> images
     ) throws Exception {
+        AuthService.AuthenticatedUser user = authService.requireUser(authorization);
         long now = System.currentTimeMillis();
 
         List<ItemDto> out = new ArrayList<>();
@@ -91,6 +113,7 @@ public class ItemController {
             item.setName(name);
             item.setImagePath(stored.filename());
             item.setCreatedAtEpochMs(now);
+            item.setUserId(user.id());
             itemRepository.save(item);
 
             String analysisError = null;
@@ -113,9 +136,11 @@ public class ItemController {
     @PostMapping("/{id}/analyze")
     public ItemDto analyze(
             @PathVariable Integer id,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(required = false) MultipartFile image
     ) throws Exception {
-        Item item = findItem(id);
+        AuthService.AuthenticatedUser user = authService.requireUser(authorization);
+        Item item = findItem(id, user);
         try {
             ItemAnalysisService.ItemAnalysisResult analysis = image != null && !image.isEmpty()
                     ? itemAnalysisService.analyze(image.getBytes())
@@ -130,15 +155,21 @@ public class ItemController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Integer id) throws Exception {
-        Item item = findItem(id);
+    @Transactional
+    public ResponseEntity<Void> delete(
+            @PathVariable Integer id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) throws Exception {
+        AuthService.AuthenticatedUser user = authService.requireUser(authorization);
+        Item item = findItem(id, user);
         imageStorageService.delete(item.getImagePath());
+        savedOutfitItemRepository.deleteByIdItemId(item.getId());
         itemRepository.delete(item);
         return ResponseEntity.noContent().build();
     }
 
-    private Item findItem(Integer id) {
-        return itemRepository.findById(id)
+    private Item findItem(Integer id, AuthService.AuthenticatedUser user) {
+        return itemRepository.findByIdAndUserId(id, user.id())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found: " + id));
     }
 

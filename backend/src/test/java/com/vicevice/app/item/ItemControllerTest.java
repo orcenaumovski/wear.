@@ -1,6 +1,8 @@
 package com.vicevice.app.item;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vicevice.app.auth.AuthService;
+import com.vicevice.app.outfit.SavedOutfitItemRepository;
 import com.vicevice.app.storage.ImageStorageService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,12 +29,12 @@ class ItemControllerTest {
     @Test
     void missingItemRoutesReturn404() throws Exception {
         ItemRepository itemRepository = mock(ItemRepository.class);
-        when(itemRepository.findById(99)).thenReturn(Optional.empty());
+        when(itemRepository.findByIdAndUserId(99, 1)).thenReturn(Optional.empty());
         ItemController controller = controller(itemRepository);
 
-        assertNotFound(() -> controller.get(99));
-        assertNotFound(() -> controller.image(99));
-        assertNotFound(() -> controller.analyze(99, null));
+        assertNotFound(() -> controller.get(99, "Bearer test"));
+        assertNotFound(() -> controller.image(99, "Bearer test", null));
+        assertNotFound(() -> controller.analyze(99, "Bearer test", null));
     }
 
     @Test
@@ -46,9 +48,10 @@ class ItemControllerTest {
         ReflectionTestUtils.setField(item, "id", 1);
         item.setImagePath("piece.jpg");
         item.setCreatedAtEpochMs(123L);
-        when(itemRepository.findById(1)).thenReturn(Optional.of(item));
+        item.setUserId(1);
+        when(itemRepository.findByIdAndUserId(1, 1)).thenReturn(Optional.of(item));
 
-        ResponseEntity<Resource> response = controller(itemRepository).image(1);
+        ResponseEntity<Resource> response = controller(itemRepository).image(1, "Bearer test", null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getHeaders().getFirst("X-Content-Type-Options")).isEqualTo("nosniff");
@@ -68,21 +71,33 @@ class ItemControllerTest {
         ReflectionTestUtils.setField(item, "id", 7);
         item.setImagePath("piece.jpg");
         item.setCreatedAtEpochMs(123L);
-        when(itemRepository.findById(7)).thenReturn(Optional.of(item));
+        item.setUserId(1);
+        when(itemRepository.findByIdAndUserId(7, 1)).thenReturn(Optional.of(item));
 
-        ResponseEntity<Void> response = controller(itemRepository).delete(7);
+        SavedOutfitItemRepository savedOutfitItemRepository = mock(SavedOutfitItemRepository.class);
+        ResponseEntity<Void> response = controller(itemRepository, savedOutfitItemRepository).delete(7, "Bearer test");
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
         assertThat(Files.exists(imagePath)).isFalse();
+        verify(savedOutfitItemRepository).deleteByIdItemId(7);
         verify(itemRepository).delete(item);
     }
 
     private ItemController controller(ItemRepository itemRepository) {
+        return controller(itemRepository, mock(SavedOutfitItemRepository.class));
+    }
+
+    private ItemController controller(ItemRepository itemRepository, SavedOutfitItemRepository savedOutfitItemRepository) {
+        AuthService authService = mock(AuthService.class);
+        when(authService.requireUser("Bearer test")).thenReturn(new AuthService.AuthenticatedUser(1, "test"));
+        when(authService.requireUser("Bearer test", null)).thenReturn(new AuthService.AuthenticatedUser(1, "test"));
         return new ItemController(
                 itemRepository,
                 new ImageStorageService(tempDir.toString()),
                 mock(ItemAnalysisService.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                authService,
+                savedOutfitItemRepository
         );
     }
 
